@@ -51,6 +51,28 @@ def _on_message(client, userdata, msg):
                 (device_id, 1 if online else 0),
             )
 
+    elif topic_parts[2:4] == ["evt", "wifi_result"]:
+        request_id = payload.get("request_id")
+        if not request_id:
+            return
+        connected = payload.get("status") == "connected"
+        # Guard on 'pending' so a device re-reporting an old request (e.g. it
+        # rejoined the same SSID later) can't overwrite a settled result.
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                UPDATE wifi_requests
+                SET status = ?, error_message = ?, completed_at = datetime('now')
+                WHERE request_id = ? AND device_id = ? AND status = 'pending'
+                """,
+                (
+                    "connected" if connected else "failed",
+                    None if connected else payload.get("message", "device failed to connect"),
+                    request_id,
+                    device_id,
+                ),
+            )
+
     elif topic_parts[2:4] == ["evt", "capture_result"]:
         request_id = payload.get("request_id")
         if payload.get("status") == "error" and request_id:
@@ -100,10 +122,10 @@ def publish_capture_command(device_id: str, request_id: str) -> None:
     _client.publish(f"devices/{device_id}/cmd/capture", payload, qos=1)
 
 
-def publish_wifi_config(device_id: str, ssid: str, password: str) -> None:
+def publish_wifi_config(device_id: str, ssid: str, password: str, request_id: str) -> None:
     if _client is None:
         raise RuntimeError("MQTT client not started")
-    payload = json.dumps({"ssid": ssid, "password": password})
+    payload = json.dumps({"request_id": request_id, "ssid": ssid, "password": password})
     _client.publish(f"devices/{device_id}/cmd/wifi_config", payload, qos=1, retain=False)
 
 

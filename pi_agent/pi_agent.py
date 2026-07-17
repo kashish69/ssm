@@ -9,6 +9,10 @@ Runs three concerns in one process:
      password default to WIFI_SSID/WIFI_PASSWORD env vars, but are
      overridden at runtime (no restart needed) if a wifi_config command
      arrives over MQTT and gets written to WIFI_OVERRIDE_FILE.
+     A pushed network is only a candidate until it actually connects: on
+     success it's reported back over MQTT and remembered as last_good; after
+     WIFI_MAX_ATTEMPTS failures the agent reports the failure and reverts to
+     last_good, so bad credentials from the UI can't strand a remote device.
 
   2. MQTT client: persistent connection to the broker with a Last Will
      (offline) + retained "online" status on connect, subscribed to this
@@ -38,12 +42,14 @@ commands fail with PermissionError:
 
 Config (a .env next to this script is auto-loaded for direct runs; under
 systemd the EnvironmentFile provides these and takes precedence):
-    MQTT_BROKER_HOST, MQTT_BROKER_PORT (default 8883), MQTT_TLS_CA_CERT (optional)
+    MQTT_BROKER_HOST, MQTT_BROKER_PORT (default 443), MQTT_WS_PATH (default /mqtt)
+    MQTT_TLS_CA_CERT (optional)
     DEVICE_ID, DEVICE_API_KEY
     BACKEND_UPLOAD_URL
     WIFI_SSID, WIFI_PASSWORD
     WIFI_OVERRIDE_FILE (default /etc/pi-agent/wifi_override.json)
     WIFI_SCAN_INTERVAL (default 2 seconds)
+    WIFI_MAX_ATTEMPTS (default 3, before reverting to the last known-good SSID)
     LOG_FILE (default /home/pi/pi_agent.log)
 
 Run:
@@ -115,6 +121,9 @@ WIFI_SSID = os.environ.get("WIFI_SSID", "")
 WIFI_PASSWORD = os.environ.get("WIFI_PASSWORD", "")
 WIFI_OVERRIDE_FILE = Path(os.environ.get("WIFI_OVERRIDE_FILE", "/etc/pi-agent/wifi_override.json"))
 WIFI_SCAN_INTERVAL = float(os.environ.get("WIFI_SCAN_INTERVAL", "2"))
+# Failed attempts on a pushed network before giving up and reverting to the
+# last known-good one (a wrong SSID/password must not strand a remote device).
+WIFI_MAX_ATTEMPTS = int(os.environ.get("WIFI_MAX_ATTEMPTS", "3"))
 WIFI_CONNECT_TIMEOUT = 25
 WIFI_RESCAN_TIMEOUT = 10
 WIFI_RESCAN_SETTLE_TIME = 3
@@ -141,27 +150,64 @@ logger.addHandler(_sh)
 stop_event = threading.Event()
 capture_queue: "queue.Queue[dict]" = queue.Queue(maxsize=2)
 
+# Set once the MQTT client exists, so wifi_loop (started earlier, since the
+# network has to come up before MQTT can connect) can report results.
+_mqtt_client = None
+_reported_wifi_requests: set[str] = set()
+# Consecutive connect failures for the current target, so we can give up on an
+# unreachable network instead of chasing it forever.
+_wifi_failures: dict = {"target": None, "count": 0}
+
 
 # ------------------------------------------------------------------- wifi
-def get_wifi_target() -> tuple[str, str]:
-    """Runtime target SSID/password: override file (from a wifi_config MQTT
-    command) takes precedence over the env-var defaults, no restart needed."""
-    if WIFI_OVERRIDE_FILE.exists():
-        try:
-            data = json.loads(WIFI_OVERRIDE_FILE.read_text())
-            return data["ssid"], data.get("password", "")
-        except (json.JSONDecodeError, KeyError, OSError) as e:
-            logger.warning(f"Failed to read WiFi override file, falling back to defaults: {e}")
-    return WIFI_SSID, WIFI_PASSWORD
+def _read_override() -> dict:
+    if not WIFI_OVERRIDE_FILE.exists():
+        return {}
+    try:
+        data = json.loads(WIFI_OVERRIDE_FILE.read_text())
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"Failed to read WiFi override file, falling back to defaults: {e}")
+        return {}
 
 
-def write_wifi_override(ssid: str, password: str) -> bool:
+def get_wifi_target() -> tuple[str, str, str | None, dict | None]:
+    """Runtime WiFi target: (ssid, password, request_id, last_good).
+
+    The override file (written by a wifi_config MQTT command) takes precedence
+    over the env-var defaults, no restart needed. request_id is None once a
+    target has been confirmed, so we only report a result once. last_good is
+    the last target we actually connected to — what we fall back to if a
+    pushed network turns out to be unreachable.
+    """
+    data = _read_override()
+    last_good = data.get("last_good")
+    if data.get("ssid"):
+        return data["ssid"], data.get("password", ""), data.get("request_id"), last_good
+    return WIFI_SSID, WIFI_PASSWORD, None, last_good
+
+
+def write_wifi_override(
+    ssid: str,
+    password: str,
+    request_id: str | None = None,
+    last_good: dict | None = None,
+) -> bool:
     """Persist the runtime WiFi target. Returns False (and logs) instead of
-    raising, so a filesystem problem can't propagate into the MQTT callback."""
+    raising, so a filesystem problem can't propagate into the MQTT callback.
+
+    request_id is stored alongside so wifi_loop — the only place that learns
+    whether the connect actually succeeded — can report the result back.
+    last_good is preserved across writes unless explicitly replaced, so a bad
+    pushed network can never erase our way home."""
+    payload = {"ssid": ssid, "password": password, "request_id": request_id}
+    carried = last_good if last_good is not None else _read_override().get("last_good")
+    if carried:
+        payload["last_good"] = carried
     try:
         WIFI_OVERRIDE_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = WIFI_OVERRIDE_FILE.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps({"ssid": ssid, "password": password}))
+        tmp_path.write_text(json.dumps(payload))
         tmp_path.replace(WIFI_OVERRIDE_FILE)
     except PermissionError:
         logger.error(
@@ -213,7 +259,9 @@ def rescan_wifi() -> bool:
         return False
 
 
-def connect_wifi(ssid: str, password: str) -> bool:
+def connect_wifi(ssid: str, password: str) -> tuple[bool, str]:
+    """Returns (connected, error_message). The message is reported back to the
+    UI when we give up, so it needs to survive out of here."""
     logger.info(f"Attempting to connect to SSID '{ssid}'...")
     try:
         subprocess.run(
@@ -226,15 +274,16 @@ def connect_wifi(ssid: str, password: str) -> bool:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=WIFI_CONNECT_TIMEOUT)
         if result.returncode == 0:
             logger.info(f"nmcli reports success connecting to '{ssid}'.")
-            return True
-        logger.error(f"nmcli failed for '{ssid}': {result.stderr.strip()}")
-        return False
+            return True, ""
+        error = result.stderr.strip() or "nmcli failed"
+        logger.error(f"nmcli failed for '{ssid}': {error}")
+        return False, error
     except subprocess.TimeoutExpired:
         logger.error(f"Connection attempt to '{ssid}' timed out.")
-        return False
+        return False, "connection attempt timed out"
     except Exception as e:
         logger.error(f"Unexpected error connecting to '{ssid}': {e}")
-        return False
+        return False, str(e)
 
 
 def check_internet() -> bool:
@@ -245,17 +294,103 @@ def check_internet() -> bool:
         return False
 
 
+def publish_wifi_result(request_id: str | None, ssid: str, connected: bool, message: str = "") -> None:
+    """Report a wifi_config outcome back to the backend so the UI can confirm
+    it. Only sent once per request. If the MQTT link is down mid-switch, paho
+    queues the QoS-1 message and delivers it on reconnect."""
+    if not request_id or _mqtt_client is None or request_id in _reported_wifi_requests:
+        return
+    try:
+        _mqtt_client.publish(
+            f"devices/{DEVICE_ID}/evt/wifi_result",
+            json.dumps({
+                "request_id": request_id,
+                "status": "connected" if connected else "failed",
+                "ssid": ssid,
+                "message": message,
+                "ts": time.time(),
+            }),
+            qos=1,
+        )
+        _reported_wifi_requests.add(request_id)
+        logger.info(f"Reported WiFi result for request {request_id}: connected={connected}")
+    except Exception as e:
+        logger.warning(f"Failed to publish WiFi result for request {request_id}: {e}")
+
+
+def _note_wifi_failure(target_ssid: str) -> int:
+    if _wifi_failures["target"] != target_ssid:
+        _wifi_failures["target"] = target_ssid
+        _wifi_failures["count"] = 0
+    _wifi_failures["count"] += 1
+    return _wifi_failures["count"]
+
+
+def _reset_wifi_failures() -> None:
+    _wifi_failures["target"] = None
+    _wifi_failures["count"] = 0
+
+
+def _confirm_wifi_target(ssid: str, password: str, request_id: str | None) -> None:
+    """A target we actually reached: report it and remember it as known-good.
+    Clearing request_id also stops us re-reporting on later reconnects."""
+    if not request_id:
+        return
+    publish_wifi_result(request_id, ssid, True)
+    write_wifi_override(ssid, password, None, last_good={"ssid": ssid, "password": password})
+    _reset_wifi_failures()
+
+
+def _give_up_on_wifi(failed_ssid: str, request_id: str, error: str, last_good: dict | None) -> None:
+    """Stop chasing an unreachable network and go back to one we know works,
+    so a bad SSID/password pushed from the UI can't strand the device."""
+    fallback = last_good
+    if not fallback and WIFI_SSID:
+        fallback = {"ssid": WIFI_SSID, "password": WIFI_PASSWORD}
+
+    if fallback and fallback.get("ssid") and fallback["ssid"] != failed_ssid:
+        logger.error(
+            f"Giving up on '{failed_ssid}' after {WIFI_MAX_ATTEMPTS} attempts; "
+            f"reverting to last known-good '{fallback['ssid']}'."
+        )
+        publish_wifi_result(
+            request_id, failed_ssid, False, f"{error} (reverted to {fallback['ssid']})"
+        )
+        write_wifi_override(fallback["ssid"], fallback.get("password", ""), None, last_good=last_good)
+    else:
+        # Nothing better to fall back to — report it and stop re-reporting, but
+        # keep retrying in case the network comes back.
+        logger.error(
+            f"Giving up on '{failed_ssid}' after {WIFI_MAX_ATTEMPTS} attempts; "
+            f"no known-good network to revert to, will keep retrying."
+        )
+        publish_wifi_result(request_id, failed_ssid, False, error)
+        write_wifi_override(failed_ssid, _read_override().get("password", ""), None, last_good=last_good)
+    _reset_wifi_failures()
+
+
 def wifi_loop() -> None:
     while not stop_event.is_set():
-        target_ssid, target_password = get_wifi_target()
+        target_ssid, target_password, request_id, last_good = get_wifi_target()
         if target_ssid:
             current_ssid = get_current_ssid()
-            if current_ssid != target_ssid:
+            if current_ssid == target_ssid:
+                # Already on the requested network — that counts as applied.
+                _confirm_wifi_target(target_ssid, target_password, request_id)
+            else:
                 logger.info(f"Not on target SSID (current={current_ssid!r}, target={target_ssid!r}); reconnecting.")
                 rescan_wifi()
-                if connect_wifi(target_ssid, target_password):
+                connected, error = connect_wifi(target_ssid, target_password)
+                if connected:
                     time.sleep(3)
                     check_internet()
+                    _confirm_wifi_target(target_ssid, target_password, request_id)
+                elif request_id:
+                    # Don't report the first failure: a cold scan cache fails
+                    # once and succeeds on retry. Only give up (and revert)
+                    # after the target has really proven unreachable.
+                    if _note_wifi_failure(target_ssid) >= WIFI_MAX_ATTEMPTS:
+                        _give_up_on_wifi(target_ssid, request_id, error, last_good)
         stop_event.wait(WIFI_SCAN_INTERVAL)
 
 
@@ -315,7 +450,7 @@ def build_mqtt_client() -> mqtt.Client:
         elif msg.topic == cmd_wifi_topic:
             ssid, password = payload.get("ssid"), payload.get("password", "")
             if ssid:
-                write_wifi_override(ssid, password)
+                write_wifi_override(ssid, password, payload.get("request_id"))
 
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
@@ -402,7 +537,9 @@ def main() -> None:
     wifi_thread = threading.Thread(target=wifi_loop, daemon=True)
     wifi_thread.start()
 
+    global _mqtt_client
     mqtt_client = build_mqtt_client()
+    _mqtt_client = mqtt_client
     mqtt_client.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT)
     mqtt_client.loop_start()
 

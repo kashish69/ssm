@@ -35,6 +35,16 @@ CREATE TABLE IF NOT EXISTS capture_requests (
     image_id TEXT
 );
 
+CREATE TABLE IF NOT EXISTS wifi_requests (
+    request_id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL REFERENCES devices(device_id),
+    ssid TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','connected','failed','timeout')),
+    requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT,
+    error_message TEXT
+);
+
 CREATE TABLE IF NOT EXISTS images (
     id TEXT PRIMARY KEY,
     device_id TEXT NOT NULL REFERENCES devices(device_id),
