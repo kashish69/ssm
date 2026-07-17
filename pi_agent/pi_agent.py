@@ -229,6 +229,26 @@ def write_wifi_override(
     return True
 
 
+def _persist_last_good(ssid: str, password: str) -> None:
+    """Record the last network we actually connected to, without touching
+    the current top-level target. Called on every successful connection
+    (env-default or UI-pushed) so _give_up_on_wifi always has an accurate
+    fallback — not just whatever .env's WIFI_SSID happens to be right now,
+    which can be stale if .env was edited but the agent hasn't restarted.
+    Deliberately doesn't promote ssid/password to the top-level override:
+    that would make an env-default connection "sticky," silently outranking
+    a later legitimate .env edit until the override file is cleared."""
+    data = _read_override()
+    data["last_good"] = {"ssid": ssid, "password": password}
+    try:
+        WIFI_OVERRIDE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = WIFI_OVERRIDE_FILE.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(data))
+        tmp_path.replace(WIFI_OVERRIDE_FILE)
+    except OSError as e:
+        logger.warning(f"Failed to persist last-good WiFi target: {e}")
+
+
 def get_current_ssid() -> str | None:
     """Currently active WiFi SSID, or None if not associated to any network."""
     try:
@@ -346,8 +366,13 @@ def _reset_wifi_failures() -> None:
 
 
 def _confirm_wifi_target(ssid: str, password: str, request_id: str | None) -> None:
-    """A target we actually reached: report it and remember it as known-good.
-    Clearing request_id also stops us re-reporting on later reconnects."""
+    """A target we actually reached. Always persisted as last_good — the
+    fallback _give_up_on_wifi reverts to — regardless of whether this was a
+    UI-pushed or env-default connection. Only UI-pushed connections (those
+    with a request_id) additionally get reported over MQTT and promoted to
+    the top-level override target; clearing request_id there also stops us
+    re-reporting on later reconnects."""
+    _persist_last_good(ssid, password)
     if not request_id:
         return
     publish_wifi_result(request_id, ssid, True)
