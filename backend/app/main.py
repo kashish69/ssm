@@ -8,6 +8,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app import mqtt_client
 from app.db import init_db
+from app.migrations import seed_devices, seed_passkeys
 from app.rate_limit import limiter
 from app.routes import auth, capture, devices, images, upload, wifi
 
@@ -15,6 +16,11 @@ from app.routes import auth, capture, devices, images, upload, wifi
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Seed passkeys + devices from env on every boot (idempotent upserts), so a
+    # fresh volume is fully provisioned by `docker compose up` with no manual
+    # migration step.
+    seed_passkeys.run()
+    seed_devices.run()
     mqtt_client.start()
     yield
     mqtt_client.stop()

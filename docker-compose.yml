@@ -13,24 +13,23 @@ services:
         condition: service_healthy
 
   mosquitto:
-    image: eclipse-mosquitto:2
+    build: ./mosquitto
     restart: unless-stopped
+    # Reads MQTT_SERVICE_* + DEVICE_SEEDS from .env; the image entrypoint builds
+    # the password file from them on every boot (no manual mosquitto_passwd step).
+    env_file: .env
     # Caddy is managed outside this repo; it terminates TLS and proxies to this.
     ports:
       - "127.0.0.1:5335:5335"
     volumes:
-      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./mosquitto/acl.conf:/mosquitto/config/acl.conf:ro
-      - mosquitto_passwd:/mosquitto/config
       - mosquitto_data:/mosquitto/data
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 5335 || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 10
-      start_period: 10s
+      start_period: 5s
 
 volumes:
   backend_data:
-  mosquitto_passwd:
   mosquitto_data:
