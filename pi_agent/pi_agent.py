@@ -30,7 +30,8 @@ Install dependencies:
     sudo apt install -y python3-picamera2 network-manager
     pip3 install requests paho-mqtt --break-system-packages
 
-Config (env vars / systemd EnvironmentFile):
+Config (a .env next to this script is auto-loaded for direct runs; under
+systemd the EnvironmentFile provides these and takes precedence):
     MQTT_BROKER_HOST, MQTT_BROKER_PORT (default 8883), MQTT_TLS_CA_CERT (optional)
     DEVICE_ID, DEVICE_API_KEY
     BACKEND_UPLOAD_URL
@@ -62,6 +63,28 @@ import requests
 from picamera2 import Picamera2
 
 # ---------------------------------------------------------------- settings
+def _load_dotenv(path: Path) -> None:
+    """Load KEY=VALUE lines from a .env file into os.environ. Existing env
+    vars are NOT overwritten, so a systemd EnvironmentFile still takes
+    precedence. Supports # comments, blank lines, and quoted values."""
+    if not path.exists():
+        return
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, value)
+
+
+# Load a .env sitting next to this script (for direct `python3 pi_agent.py`
+# runs; under systemd the EnvironmentFile provides these instead).
+_load_dotenv(Path(__file__).resolve().parent / ".env")
+
+
 def _require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
