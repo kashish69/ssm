@@ -2,10 +2,11 @@ const STATUS_POLL_MS = 10_000;
 const CAPTURE_POLL_MS = 1_800;
 const CAPTURE_POLL_TIMEOUT_MS = 30_000;
 const WIFI_POLL_MS = 1_500;
-// Live action: the user waits with the modal locked, so keep it short. Slightly
-// over the backend's wifi_timeout_seconds so the server settles the request
-// first and we surface its verdict rather than racing it.
-const WIFI_POLL_TIMEOUT_MS = 32_000;
+// Must stay slightly above the backend's wifi_timeout_seconds (50s) so the
+// server settles the request first and we surface its verdict rather than
+// racing it. 50s covers one full agent rescan+connect retry cycle — see the
+// comment on wifi_timeout_seconds in backend/app/config.py.
+const WIFI_POLL_TIMEOUT_MS = 52_000;
 
 const loginScreen = document.getElementById("login-screen");
 const appScreen = document.getElementById("app-screen");

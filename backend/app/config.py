@@ -29,9 +29,11 @@ class Settings(BaseSettings):
     capture_timeout_seconds: int = 25
     capture_cooldown_seconds: int = 10
     # The UI holds the modal open while this runs, so it's a live action the
-    # user waits on. Long enough for the device to switch networks and its MQTT
-    # link to come back, short enough not to trap them.
-    wifi_timeout_seconds: int = 30
+    # user waits on. Must cover one full rescan+connect retry cycle on the
+    # agent (rescan ~13s + a stalled nmcli attempt up to WIFI_CONNECT_TIMEOUT=25s
+    # + a quick successful retry ~10s) — 30s was cutting that cycle off before
+    # a genuine success could be reported, showing a false "no confirmation".
+    wifi_timeout_seconds: int = 50
     upload_max_bytes: int = 10 * 1024 * 1024
 
     class Config:
