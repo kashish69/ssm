@@ -25,6 +25,16 @@ def _on_disconnect(client, userdata, rc, properties=None):
 
 
 def _on_message(client, userdata, msg):
+    # Anything raised here propagates out of paho's network loop and kills the
+    # client thread — the backend would keep serving HTTP while silently going
+    # deaf to every device status and event. Never let that happen.
+    try:
+        _dispatch_message(msg)
+    except Exception:
+        logger.exception(f"Error handling MQTT message on {msg.topic}")
+
+
+def _dispatch_message(msg):
     topic_parts = msg.topic.split("/")
     if len(topic_parts) < 3:
         return
@@ -56,14 +66,21 @@ def _on_message(client, userdata, msg):
         if not request_id:
             return
         connected = payload.get("status") == "connected"
-        # Guard on 'pending' so a device re-reporting an old request (e.g. it
-        # rejoined the same SSID later) can't overwrite a settled result.
+        logger.info(
+            f"WiFi result from {device_id} for request {request_id}: "
+            f"{'connected' if connected else 'failed'} (ssid={payload.get('ssid')!r})"
+        )
+        # Settle 'pending', but also let a late 'connected' correct a request we
+        # already aged out to 'timeout' — the device switching networks can take
+        # longer than the UI waits, and it did succeed. A stale 'failed' must not
+        # clobber a settled result, hence the status filter.
+        allowed = "('pending','timeout')" if connected else "('pending')"
         with get_cursor() as cur:
             cur.execute(
-                """
+                f"""
                 UPDATE wifi_requests
                 SET status = ?, error_message = ?, completed_at = datetime('now')
-                WHERE request_id = ? AND device_id = ? AND status = 'pending'
+                WHERE request_id = ? AND device_id = ? AND status IN {allowed}
                 """,
                 (
                     "connected" if connected else "failed",
