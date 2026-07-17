@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=pi
 EnvironmentFile=/etc/pi-agent/pi-agent.env
-ExecStart=/usr/bin/python3 /home/pi/rpi-aus/pi_agent.py
+ExecStart=/usr/bin/python3 /home/pi/rpi-aus/pi_agent/pi_agent.py
 Restart=always
 RestartSec=5
 
