@@ -8,13 +8,24 @@ const loginForm = document.getElementById("login-form");
 const passkeyInput = document.getElementById("passkey-input");
 const loginError = document.getElementById("login-error");
 const logoutBtn = document.getElementById("logout-btn");
+const refreshBtn = document.getElementById("refresh-btn");
 const deviceGrid = document.getElementById("device-grid");
 const emptyState = document.getElementById("empty-state");
 const cardTemplate = document.getElementById("device-card-template");
 
 const historyModal = document.getElementById("history-modal");
 const historyTitle = document.getElementById("history-title");
-const historyList = document.getElementById("history-list");
+const historyMessage = document.getElementById("history-message");
+const historyCarousel = document.getElementById("history-carousel");
+const carouselImg = document.getElementById("carousel-img");
+const carouselThumbs = document.getElementById("carousel-thumbs");
+const carouselPrev = document.getElementById("carousel-prev");
+const carouselNext = document.getElementById("carousel-next");
+const carouselDownload = document.getElementById("carousel-download");
+const carouselFullscreen = document.getElementById("carousel-fullscreen");
+const detailDevice = document.getElementById("detail-device");
+const detailCaptured = document.getElementById("detail-captured");
+const detailPosition = document.getElementById("detail-position");
 
 const wifiModal = document.getElementById("wifi-modal");
 const wifiForm = document.getElementById("wifi-form");
@@ -90,6 +101,11 @@ async function loadDevices() {
   const res = await apiFetch("/api/devices");
   const devices = await res.json();
 
+  // Clear existing per-card status pollers before rebuilding the grid so a
+  // reload (e.g. the Refresh button) doesn't leak duplicate intervals.
+  for (const id of statusIntervals.values()) clearInterval(id);
+  statusIntervals.clear();
+
   deviceGrid.innerHTML = "";
   emptyState.classList.toggle("hidden", devices.length > 0);
 
@@ -97,6 +113,17 @@ async function loadDevices() {
     renderDeviceCard(device);
   }
 }
+
+refreshBtn.addEventListener("click", async () => {
+  refreshBtn.disabled = true;
+  refreshBtn.classList.add("refreshing");
+  try {
+    await loadDevices();
+  } finally {
+    refreshBtn.disabled = false;
+    refreshBtn.classList.remove("refreshing");
+  }
+});
 
 function renderDeviceCard(device) {
   const node = cardTemplate.content.cloneNode(true);
@@ -238,36 +265,110 @@ async function onCapture(deviceId, btn, statusEl, card) {
 }
 
 // ------------------------------------------------------------- history
+let carouselItems = [];
+let carouselIndex = 0;
+let carouselDeviceName = "";
+
+function showHistoryMessage(text) {
+  historyCarousel.classList.add("hidden");
+  historyMessage.textContent = text;
+  historyMessage.classList.remove("hidden");
+}
+
+function renderCarousel() {
+  const item = carouselItems[carouselIndex];
+  carouselImg.src = item.image_url;
+  detailDevice.textContent = carouselDeviceName;
+  detailCaptured.textContent = formatTimestamp(item.captured_at);
+  detailPosition.textContent = `${carouselIndex + 1} of ${carouselItems.length}`;
+  carouselPrev.disabled = carouselIndex === 0;
+  carouselNext.disabled = carouselIndex === carouselItems.length - 1;
+
+  carouselThumbs.querySelectorAll(".carousel-thumb").forEach((thumb, i) => {
+    thumb.classList.toggle("active", i === carouselIndex);
+  });
+  const activeThumb = carouselThumbs.children[carouselIndex];
+  if (activeThumb) activeThumb.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function goToCapture(index) {
+  carouselIndex = Math.max(0, Math.min(index, carouselItems.length - 1));
+  renderCarousel();
+}
+
+carouselPrev.addEventListener("click", () => goToCapture(carouselIndex - 1));
+carouselNext.addEventListener("click", () => goToCapture(carouselIndex + 1));
+
+document.addEventListener("keydown", (e) => {
+  if (historyModal.classList.contains("hidden") || carouselItems.length === 0) return;
+  if (e.key === "ArrowLeft") goToCapture(carouselIndex - 1);
+  if (e.key === "ArrowRight") goToCapture(carouselIndex + 1);
+  if (e.key === "Escape") closeModal(historyModal);
+});
+
+carouselDownload.addEventListener("click", async () => {
+  const item = carouselItems[carouselIndex];
+  if (!item) return;
+  const filename = `capture-${(item.captured_at || "image").replace(/[:.]/g, "-")}.jpg`;
+  try {
+    const res = await fetch(item.image_url);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (_) {
+    // fallback: open in a new tab if the blob fetch fails (e.g. CORS)
+    window.open(item.image_url, "_blank");
+  }
+});
+
+carouselFullscreen.addEventListener("click", () => {
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else if (carouselImg.requestFullscreen) {
+    carouselImg.requestFullscreen();
+  } else if (carouselImg.webkitRequestFullscreen) {
+    carouselImg.webkitRequestFullscreen();
+  }
+});
+
 async function onHistory(deviceId, displayName) {
   historyTitle.textContent = `History - ${displayName}`;
-  historyList.innerHTML = "Loading...";
+  carouselDeviceName = displayName;
+  showHistoryMessage("Loading...");
   historyModal.classList.remove("hidden");
 
   try {
     const res = await apiFetch(`/api/devices/${encodeURIComponent(deviceId)}/history`);
     if (!res.ok) {
-      historyList.textContent = "Failed to load history.";
+      showHistoryMessage("Failed to load history.");
       return;
     }
     const items = await res.json();
-    historyList.innerHTML = "";
     if (items.length === 0) {
-      historyList.textContent = "No captures yet.";
+      showHistoryMessage("No captures yet.");
       return;
     }
-    for (const item of items) {
-      const div = document.createElement("div");
-      div.className = "history-item";
-      const img = document.createElement("img");
-      img.src = item.image_url;
-      img.alt = "Past capture";
-      const ts = document.createElement("div");
-      ts.className = "history-ts";
-      ts.textContent = formatTimestamp(item.captured_at);
-      div.appendChild(img);
-      div.appendChild(ts);
-      historyList.appendChild(div);
-    }
+
+    carouselItems = items;
+    carouselIndex = 0;
+
+    carouselThumbs.innerHTML = "";
+    items.forEach((item, i) => {
+      const thumb = document.createElement("img");
+      thumb.className = "carousel-thumb";
+      thumb.src = item.image_url;
+      thumb.alt = `Capture ${i + 1}`;
+      thumb.addEventListener("click", () => goToCapture(i));
+      carouselThumbs.appendChild(thumb);
+    });
+
+    historyMessage.classList.add("hidden");
+    historyCarousel.classList.remove("hidden");
+    renderCarousel();
   } catch (_) {
     // showLogin() already triggered on 401
   }
