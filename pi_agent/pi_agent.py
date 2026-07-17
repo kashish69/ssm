@@ -30,6 +30,12 @@ Install dependencies:
     sudo apt install -y python3-picamera2 network-manager
     pip3 install requests paho-mqtt --break-system-packages
 
+Create the config dir this user can write (WIFI_OVERRIDE_FILE lives here, and
+it's where systemd's EnvironmentFile is kept) — without it, wifi_config
+commands fail with PermissionError:
+
+    sudo mkdir -p /etc/pi-agent && sudo chown $USER /etc/pi-agent
+
 Config (a .env next to this script is auto-loaded for direct runs; under
 systemd the EnvironmentFile provides these and takes precedence):
     MQTT_BROKER_HOST, MQTT_BROKER_PORT (default 8883), MQTT_TLS_CA_CERT (optional)
@@ -149,12 +155,27 @@ def get_wifi_target() -> tuple[str, str]:
     return WIFI_SSID, WIFI_PASSWORD
 
 
-def write_wifi_override(ssid: str, password: str) -> None:
-    WIFI_OVERRIDE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = WIFI_OVERRIDE_FILE.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps({"ssid": ssid, "password": password}))
-    tmp_path.replace(WIFI_OVERRIDE_FILE)
+def write_wifi_override(ssid: str, password: str) -> bool:
+    """Persist the runtime WiFi target. Returns False (and logs) instead of
+    raising, so a filesystem problem can't propagate into the MQTT callback."""
+    try:
+        WIFI_OVERRIDE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = WIFI_OVERRIDE_FILE.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps({"ssid": ssid, "password": password}))
+        tmp_path.replace(WIFI_OVERRIDE_FILE)
+    except PermissionError:
+        logger.error(
+            f"No permission to write {WIFI_OVERRIDE_FILE}. Create the directory and "
+            f"give this user ownership, e.g. "
+            f"`sudo mkdir -p {WIFI_OVERRIDE_FILE.parent} && sudo chown $USER {WIFI_OVERRIDE_FILE.parent}`, "
+            f"or point WIFI_OVERRIDE_FILE at a writable path."
+        )
+        return False
+    except OSError as e:
+        logger.error(f"Failed to write {WIFI_OVERRIDE_FILE}: {e}")
+        return False
     logger.info(f"WiFi override updated -> target SSID '{ssid}'")
+    return True
 
 
 def get_current_ssid() -> str | None:
@@ -271,6 +292,15 @@ def build_mqtt_client() -> mqtt.Client:
         logger.warning(f"MQTT disconnected, rc={rc}")
 
     def on_message(c, userdata, msg):
+        # Anything raised here propagates out of paho's network loop and kills
+        # the client thread, leaving the agent alive but deaf to all further
+        # commands (and still retained "online"). Never let that happen.
+        try:
+            _dispatch_message(msg)
+        except Exception:
+            logger.exception(f"Error handling MQTT message on {msg.topic}")
+
+    def _dispatch_message(msg):
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
