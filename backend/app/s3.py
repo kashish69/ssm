@@ -5,6 +5,11 @@ from app.config import settings
 _client = boto3.client(
     "s3",
     region_name=settings.aws_region,
+    # Regional endpoint so presigned GET URLs are signed for the bucket's
+    # region. The global s3.amazonaws.com host redirects non-us-east-1 buckets
+    # to their regional endpoint, which breaks the host-bound SigV4 signature
+    # (403 SignatureDoesNotMatch in the browser).
+    endpoint_url=f"https://s3.{settings.aws_region}.amazonaws.com",
     aws_access_key_id=settings.aws_access_key_id,
     aws_secret_access_key=settings.aws_secret_access_key,
 )
