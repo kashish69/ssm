@@ -34,27 +34,28 @@ only extra step beyond the DB seed.
 
 ## TLS (handled by Caddy, not mosquitto)
 
-`mosquitto.conf` has no TLS config — it only binds `127.0.0.1:5335` on the
-host (see `docker-compose.yml`), not reachable from outside the box directly.
-Caddy (outside this repo) must terminate TLS for the public MQTT port and
-proxy the decrypted TCP stream to `127.0.0.1:5335`, e.g. via Caddy's `layer4`
-app:
+`mosquitto.conf` has no TLS config. It binds two local listeners (see
+`docker-compose.yml`), neither reachable from outside the box directly:
+
+- `127.0.0.1:5335` — plain MQTT, used by the backend over the docker network.
+- `127.0.0.1:9001` — MQTT-over-WebSocket, for external/Pi clients via Caddy.
+
+Pi devices connect **MQTT-over-WebSocket (WSS)** through the existing Caddy
+site on 443 — no `caddy-l4` plugin, no extra open port, reuses the backend's
+TLS cert. Add a `/mqtt` route to the same site block that fronts the backend:
 
 ```
-{
-    layer4 {
-        <public-domain>:8883 {
-            @mqtt tls
-            route @mqtt {
-                tls
-                proxy 127.0.0.1:5335
-            }
-        }
+<public-domain> {
+    handle /mqtt* {
+        reverse_proxy 127.0.0.1:9001
+    }
+    handle {
+        reverse_proxy 127.0.0.1:8000
     }
 }
 ```
-(exact syntax depends on your Caddy version/plugins — adjust to however
-you're already fronting the backend on 8000.)
+Caddy passes the WebSocket upgrade automatically. The Pi agent connects with
+`MQTT_BROKER_PORT=443`, `MQTT_WS_PATH=/mqtt` (see `pi_agent/.env.example`).
 
 The backend container itself talks to mosquitto directly over the internal
 docker network (`MQTT_BROKER_HOST=mosquitto`, `MQTT_BROKER_PORT=5335`,

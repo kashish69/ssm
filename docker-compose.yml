@@ -18,9 +18,12 @@ services:
     # Reads MQTT_SERVICE_* + DEVICE_SEEDS from .env; the image entrypoint builds
     # the password file from them on every boot (no manual mosquitto_passwd step).
     env_file: .env
-    # Caddy is managed outside this repo; it terminates TLS and proxies to this.
+    # Caddy is managed outside this repo; it terminates TLS and proxies to these.
+    # 5335 = plain MQTT for the backend (internal); 9001 = MQTT-over-WebSocket
+    # that Caddy exposes at https://<domain>/mqtt for Pi devices.
     ports:
       - "127.0.0.1:5335:5335"
+      - "127.0.0.1:9001:9001"
     volumes:
       - mosquitto_data:/mosquitto/data
     healthcheck:

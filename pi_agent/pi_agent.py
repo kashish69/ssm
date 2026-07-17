@@ -94,8 +94,11 @@ def _require_env(name: str) -> str:
 
 
 MQTT_BROKER_HOST = _require_env("MQTT_BROKER_HOST")
-MQTT_BROKER_PORT = int(os.environ.get("MQTT_BROKER_PORT", "8883"))
+MQTT_BROKER_PORT = int(os.environ.get("MQTT_BROKER_PORT", "443"))
 MQTT_TLS_CA_CERT = os.environ.get("MQTT_TLS_CA_CERT") or None
+# MQTT-over-WebSocket path (Caddy reverse-proxies this path to the broker's
+# websockets listener; TLS terminated by Caddy on 443).
+MQTT_WS_PATH = os.environ.get("MQTT_WS_PATH", "/mqtt")
 
 DEVICE_ID = _require_env("DEVICE_ID")
 DEVICE_API_KEY = _require_env("DEVICE_API_KEY")
@@ -241,7 +244,9 @@ def build_mqtt_client() -> mqtt.Client:
     cmd_capture_topic = f"devices/{DEVICE_ID}/cmd/capture"
     cmd_wifi_topic = f"devices/{DEVICE_ID}/cmd/wifi_config"
 
-    client = mqtt.Client(client_id=DEVICE_ID, protocol=mqtt.MQTTv311, clean_session=False)
+    client = mqtt.Client(client_id=DEVICE_ID, protocol=mqtt.MQTTv311, clean_session=False,
+                         transport="websockets")
+    client.ws_set_options(path=MQTT_WS_PATH)
     client.username_pw_set(DEVICE_ID, DEVICE_API_KEY)
     if MQTT_TLS_CA_CERT:
         client.tls_set(ca_certs=MQTT_TLS_CA_CERT)
