@@ -28,6 +28,10 @@ class Settings(BaseSettings):
 
     capture_timeout_seconds: int = 25
     capture_cooldown_seconds: int = 10
+    # Applying WiFi is slow: nmcli can take ~25s per attempt, the agent retries
+    # on a cold scan cache, and the device's MQTT link drops while it switches
+    # networks — so this is much longer than the capture timeout.
+    wifi_timeout_seconds: int = 90
     upload_max_bytes: int = 10 * 1024 * 1024
 
     class Config:

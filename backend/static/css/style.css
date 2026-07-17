@@ -430,6 +430,8 @@ button:focus-visible {
   color: var(--muted);
   min-height: 1.1em;
 }
+.form-status.ok { color: var(--online); font-weight: 550; }
+.form-status.err { color: var(--danger); }
 
 /* ---------------------------------------------------------- history */
 .modal-content-lg {

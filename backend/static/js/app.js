@@ -1,6 +1,11 @@
 const STATUS_POLL_MS = 10_000;
 const CAPTURE_POLL_MS = 1_800;
 const CAPTURE_POLL_TIMEOUT_MS = 30_000;
+const WIFI_POLL_MS = 2_000;
+// Generous: the device retries nmcli and drops its MQTT link while switching
+// networks. Slightly over the backend's wifi_timeout_seconds so the server's
+// own timeout is what we surface.
+const WIFI_POLL_TIMEOUT_MS = 95_000;
 
 const loginScreen = document.getElementById("login-screen");
 const appScreen = document.getElementById("app-screen");
@@ -387,20 +392,75 @@ function onWifiOpen(deviceId) {
   wifiModal.classList.remove("hidden");
 }
 
+function setWifiStatus(text, state) {
+  wifiFormStatus.textContent = text;
+  wifiFormStatus.classList.remove("ok", "err");
+  if (state) wifiFormStatus.classList.add(state);
+}
+
 wifiForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   if (!wifiModalDeviceId) return;
-  wifiFormStatus.textContent = "Sending...";
+
+  const deviceId = wifiModalDeviceId;
+  const submitBtn = wifiForm.querySelector("button[type=submit]");
+  submitBtn.disabled = true;
+  setWifiStatus("Sending...");
+
+  let requestId;
   try {
-    const res = await apiFetch(`/api/devices/${encodeURIComponent(wifiModalDeviceId)}/wifi-config`, {
+    const res = await apiFetch(`/api/devices/${encodeURIComponent(deviceId)}/wifi-config`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ssid: wifiSsidInput.value, password: wifiPasswordInput.value }),
     });
-    wifiFormStatus.textContent = res.ok ? "Sent to device." : "Failed to send.";
+    if (!res.ok) {
+      setWifiStatus("Failed to send.", "err");
+      submitBtn.disabled = false;
+      return;
+    }
+    requestId = (await res.json()).request_id;
   } catch (_) {
-    // showLogin() already triggered on 401
+    return; // showLogin() already triggered on 401
   }
+
+  // "Sent" only means the broker took the command; wait for the device to
+  // report that it actually joined the network.
+  setWifiStatus("Sent. Waiting for device to connect...");
+  const deadline = Date.now() + WIFI_POLL_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, WIFI_POLL_MS));
+    let data;
+    try {
+      const res = await apiFetch(
+        `/api/devices/${encodeURIComponent(deviceId)}/wifi-config/${requestId}`
+      );
+      if (!res.ok) continue;
+      data = await res.json();
+    } catch (_) {
+      return;
+    }
+
+    if (data.status === "connected") {
+      setWifiStatus(`Connected to ${data.ssid}.`, "ok");
+      submitBtn.disabled = false;
+      return;
+    }
+    if (data.status === "failed") {
+      setWifiStatus(`Failed to connect: ${data.error_message || "unknown error"}`, "err");
+      submitBtn.disabled = false;
+      return;
+    }
+    if (data.status === "timeout") {
+      setWifiStatus("No confirmation from device. It may be out of range or the password may be wrong.", "err");
+      submitBtn.disabled = false;
+      return;
+    }
+  }
+
+  setWifiStatus("No confirmation from device. It may be out of range or the password may be wrong.", "err");
+  submitBtn.disabled = false;
 });
 
 // ---------------------------------------------------------------- init

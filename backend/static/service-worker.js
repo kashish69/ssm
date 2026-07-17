@@ -1,4 +1,4 @@
-const SHELL_CACHE = "smart-shelf-shell-v5";
+const SHELL_CACHE = "smart-shelf-shell-v6";
 const SHELL_ASSETS = [
   "/",
   "/index.html",
