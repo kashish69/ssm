@@ -553,7 +553,13 @@ def main() -> None:
     global _mqtt_client
     mqtt_client = build_mqtt_client()
     _mqtt_client = mqtt_client
-    mqtt_client.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT)
+    # connect() blocks and raises immediately on any DNS/network failure —
+    # fatal if wifi_loop (started above) hasn't connected yet, which crashed
+    # the whole agent on every cold boot / network switch before it could even
+    # try. connect_async() + loop_start() defers the first attempt to paho's
+    # background thread, which retries with the backoff set below instead of
+    # raising — same pattern the backend's mqtt_client.py already uses.
+    mqtt_client.connect_async(MQTT_BROKER_HOST, MQTT_BROKER_PORT)
     mqtt_client.loop_start()
 
     worker_thread = threading.Thread(target=capture_worker, args=(picam2, mqtt_client), daemon=True)
