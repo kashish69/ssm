@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RPi Capture</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#111318">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div id="login-screen" class="screen">
+  <form id="login-form" class="login-card">
+    <h1>RPi Capture</h1>
+    <input id="passkey-input" type="password" placeholder="Passkey" autocomplete="current-password" required>
+    <button type="submit">Log in</button>
+    <p id="login-error" class="error hidden"></p>
+  </form>
+</div>
+
+<div id="app-screen" class="screen hidden">
+  <header class="app-header">
+    <h1>RPi Capture</h1>
+    <button id="logout-btn" class="link-btn">Log out</button>
+  </header>
+  <div id="device-grid" class="device-grid"></div>
+  <p id="empty-state" class="empty-state hidden">No devices configured.</p>
+</div>
+
+<template id="device-card-template">
+  <div class="device-card" data-device-id="">
+    <div class="viewfinder">
+      <img class="viewfinder-img" alt="Latest capture">
+      <div class="viewfinder-placeholder">No capture yet</div>
+      <div class="timestamp-overlay"></div>
+      <div class="status-pill offline">offline</div>
+    </div>
+    <div class="card-name"></div>
+    <div class="card-actions">
+      <button class="capture-btn">Capture</button>
+      <button class="history-btn">History</button>
+      <button class="wifi-btn" title="WiFi settings">&#9881;</button>
+    </div>
+    <p class="capture-status"></p>
+  </div>
+</template>
+
+<div id="history-modal" class="modal hidden">
+  <div class="modal-content">
+    <button class="modal-close" data-close="history-modal">&times;</button>
+    <h2 id="history-title">History</h2>
+    <div id="history-list" class="history-list"></div>
+  </div>
+</div>
+
+<div id="wifi-modal" class="modal hidden">
+  <div class="modal-content">
+    <button class="modal-close" data-close="wifi-modal">&times;</button>
+    <h2>WiFi settings</h2>
+    <form id="wifi-form">
+      <input id="wifi-ssid" type="text" placeholder="SSID" required>
+      <input id="wifi-password" type="password" placeholder="Password">
+      <button type="submit">Send to device</button>
+      <p id="wifi-form-status"></p>
+    </form>
+  </div>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

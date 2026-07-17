@@ -1,0 +1,36 @@
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - backend_data:/data
+    # Caddy is managed outside this repo; reverse_proxy it to 127.0.0.1:8000.
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    # Caddy is managed outside this repo; it terminates TLS and proxies to this.
+    ports:
+      - "127.0.0.1:5335:5335"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl.conf:/mosquitto/config/acl.conf:ro
+      - mosquitto_passwd:/mosquitto/config
+      - mosquitto_data:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 5335 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  backend_data:
+  mosquitto_passwd:
+  mosquitto_data:

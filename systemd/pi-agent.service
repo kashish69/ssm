@@ -1,0 +1,15 @@
+[Unit]
+Description=RPi remote-capture agent (WiFi auto-connect + MQTT + camera capture)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+EnvironmentFile=/etc/pi-agent/pi-agent.env
+ExecStart=/usr/bin/python3 /home/pi/rpi-aus/pi_agent.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
