@@ -1,4 +1,4 @@
-const SHELL_CACHE = "rpi-capture-shell-v1";
+const SHELL_CACHE = "smart-shelf-shell-v2";
 const SHELL_ASSETS = [
   "/",
   "/index.html",
