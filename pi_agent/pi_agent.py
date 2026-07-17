@@ -153,7 +153,12 @@ capture_queue: "queue.Queue[dict]" = queue.Queue(maxsize=2)
 # Set once the MQTT client exists, so wifi_loop (started earlier, since the
 # network has to come up before MQTT can connect) can report results.
 _mqtt_client = None
-_reported_wifi_requests: set[str] = set()
+# request_id -> last status reported ("connected"/"failed"). A dict (not a
+# set) so a later "connected" can still be sent after an earlier "failed" for
+# the same request — give-up no longer clears request_id, so a target that
+# fails, gets given up on, then later succeeds (network reappears) needs to
+# report that success too, not just its first failure.
+_reported_wifi_requests: dict[str, str] = {}
 # Consecutive connect failures for the current target, so we can give up on an
 # unreachable network instead of chasing it forever.
 _wifi_failures: dict = {"target": None, "count": 0}
@@ -296,23 +301,32 @@ def check_internet() -> bool:
 
 def publish_wifi_result(request_id: str | None, ssid: str, connected: bool, message: str = "") -> None:
     """Report a wifi_config outcome back to the backend so the UI can confirm
-    it. Only sent once per request. If the MQTT link is down mid-switch, paho
-    queues the QoS-1 message and delivers it on reconnect."""
-    if not request_id or _mqtt_client is None or request_id in _reported_wifi_requests:
+    it. Skips an exact repeat (e.g. give-up re-firing 'failed' for the same
+    still-unreachable target every WIFI_MAX_ATTEMPTS cycle) and skips anything
+    after a 'connected' has already been reported (terminal) — but a later
+    'connected' following an earlier 'failed' IS sent, so a target that gives
+    up and then later succeeds (network reappears) still gets its success
+    reported. If the MQTT link is down mid-switch, paho queues the QoS-1
+    message and delivers it on reconnect."""
+    if not request_id or _mqtt_client is None:
+        return
+    new_status = "connected" if connected else "failed"
+    prev_status = _reported_wifi_requests.get(request_id)
+    if prev_status == new_status or prev_status == "connected":
         return
     try:
         _mqtt_client.publish(
             f"devices/{DEVICE_ID}/evt/wifi_result",
             json.dumps({
                 "request_id": request_id,
-                "status": "connected" if connected else "failed",
+                "status": new_status,
                 "ssid": ssid,
                 "message": message,
                 "ts": time.time(),
             }),
             qos=1,
         )
-        _reported_wifi_requests.add(request_id)
+        _reported_wifi_requests[request_id] = new_status
         logger.info(f"Reported WiFi result for request {request_id}: connected={connected}")
     except Exception as e:
         logger.warning(f"Failed to publish WiFi result for request {request_id}: {e}")
@@ -358,14 +372,23 @@ def _give_up_on_wifi(failed_ssid: str, request_id: str, error: str, last_good: d
         )
         write_wifi_override(fallback["ssid"], fallback.get("password", ""), None, last_good=last_good)
     else:
-        # Nothing better to fall back to — report it and stop re-reporting, but
-        # keep retrying in case the network comes back.
+        # Nothing better to fall back to — report it, then keep retrying the
+        # SAME target as-is. Deliberately does NOT rewrite the override file:
+        # there's nothing better to write, and re-deriving the password here
+        # (rather than using the one that was actually just attempted) is
+        # exactly what caused a real bug — when the failing target was the
+        # .env default (no override file ever written, since a pure env-
+        # default target has no request_id and _confirm_wifi_target never
+        # persists on success), re-reading a nonexistent file silently baked
+        # an empty password into a brand-new override file, permanently
+        # shadowing a correct .env password with a blank one. Not touching
+        # the file when there's nothing to improve avoids this whole class of
+        # bug: whatever's already on disk (or correctly absent) stays correct.
         logger.error(
             f"Giving up on '{failed_ssid}' after {WIFI_MAX_ATTEMPTS} attempts; "
-            f"no known-good network to revert to, will keep retrying."
+            f"no known-good network to revert to, will keep retrying as-is."
         )
         publish_wifi_result(request_id, failed_ssid, False, error)
-        write_wifi_override(failed_ssid, _read_override().get("password", ""), None, last_good=last_good)
     _reset_wifi_failures()
 
 
