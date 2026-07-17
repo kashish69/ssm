@@ -1,11 +1,11 @@
 const STATUS_POLL_MS = 10_000;
 const CAPTURE_POLL_MS = 1_800;
 const CAPTURE_POLL_TIMEOUT_MS = 30_000;
-const WIFI_POLL_MS = 2_000;
-// Generous: the device retries nmcli and drops its MQTT link while switching
-// networks. Slightly over the backend's wifi_timeout_seconds so the server's
-// own timeout is what we surface.
-const WIFI_POLL_TIMEOUT_MS = 95_000;
+const WIFI_POLL_MS = 1_500;
+// Live action: the user waits with the modal locked, so keep it short. Slightly
+// over the backend's wifi_timeout_seconds so the server settles the request
+// first and we surface its verdict rather than racing it.
+const WIFI_POLL_TIMEOUT_MS = 32_000;
 
 const loginScreen = document.getElementById("login-screen");
 const appScreen = document.getElementById("app-screen");
@@ -39,6 +39,8 @@ const wifiPasswordInput = document.getElementById("wifi-password");
 const wifiFormStatus = document.getElementById("wifi-form-status");
 
 let wifiModalDeviceId = null;
+// True while a WiFi change is in flight — locks the modal until it resolves.
+let wifiBusy = false;
 const statusIntervals = new Map();
 
 function showLogin() {
@@ -73,7 +75,12 @@ function closeModal(modal) {
 }
 
 document.querySelectorAll("[data-close]").forEach((btn) => {
-  btn.addEventListener("click", () => closeModal(document.getElementById(btn.dataset.close)));
+  btn.addEventListener("click", () => {
+    // Applying WiFi is a live action: hold the modal open until we know the
+    // outcome, so the user can't wander off believing it worked.
+    if (btn.dataset.close === "wifi-modal" && wifiBusy) return;
+    closeModal(document.getElementById(btn.dataset.close));
+  });
 });
 
 // --------------------------------------------------------------- login
@@ -385,27 +392,41 @@ async function onHistory(deviceId, displayName) {
 
 // ---------------------------------------------------------------- wifi
 function onWifiOpen(deviceId) {
+  if (wifiBusy) return; // a change is still resolving for another device
   wifiModalDeviceId = deviceId;
   wifiSsidInput.value = "";
   wifiPasswordInput.value = "";
-  wifiFormStatus.textContent = "";
+  setWifiStatus("");
+  setWifiBusy(false);
   wifiModal.classList.remove("hidden");
 }
 
 function setWifiStatus(text, state) {
   wifiFormStatus.textContent = text;
-  wifiFormStatus.classList.remove("ok", "err");
+  wifiFormStatus.classList.remove("ok", "err", "busy");
   if (state) wifiFormStatus.classList.add(state);
+}
+
+// While a WiFi change is in flight the modal is locked: the device drops off
+// the network to switch, and the outcome is only knowable here — letting the
+// user close and navigate away would silently discard the verdict.
+function setWifiBusy(busy) {
+  wifiBusy = busy;
+  wifiForm.querySelector("button[type=submit]").disabled = busy;
+  wifiSsidInput.disabled = busy;
+  wifiPasswordInput.disabled = busy;
+  const closeBtn = wifiModal.querySelector(".modal-close");
+  if (closeBtn) closeBtn.disabled = busy;
+  wifiModal.classList.toggle("busy", busy);
 }
 
 wifiForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (!wifiModalDeviceId) return;
+  if (!wifiModalDeviceId || wifiBusy) return;
 
   const deviceId = wifiModalDeviceId;
-  const submitBtn = wifiForm.querySelector("button[type=submit]");
-  submitBtn.disabled = true;
-  setWifiStatus("Sending...");
+  setWifiBusy(true);
+  setWifiStatus("Sending...", "busy");
 
   let requestId;
   try {
@@ -416,21 +437,28 @@ wifiForm.addEventListener("submit", async (e) => {
     });
     if (!res.ok) {
       setWifiStatus("Failed to send.", "err");
-      submitBtn.disabled = false;
+      setWifiBusy(false);
       return;
     }
     requestId = (await res.json()).request_id;
   } catch (_) {
+    setWifiBusy(false);
     return; // showLogin() already triggered on 401
   }
 
-  // "Sent" only means the broker took the command; wait for the device to
-  // report that it actually joined the network.
-  setWifiStatus("Sent. Waiting for device to connect...");
+  // "Sent" only means the broker took the command. The device now drops off
+  // the network to switch, so wait for it to come back and confirm.
   const deadline = Date.now() + WIFI_POLL_TIMEOUT_MS;
+  const finish = (text, state) => {
+    setWifiStatus(text, state);
+    setWifiBusy(false);
+  };
 
   while (Date.now() < deadline) {
+    const left = Math.ceil((deadline - Date.now()) / 1000);
+    setWifiStatus(`Applying — waiting for device to reconnect... (${left}s)`, "busy");
     await new Promise((r) => setTimeout(r, WIFI_POLL_MS));
+
     let data;
     try {
       const res = await apiFetch(
@@ -439,28 +467,28 @@ wifiForm.addEventListener("submit", async (e) => {
       if (!res.ok) continue;
       data = await res.json();
     } catch (_) {
+      setWifiBusy(false);
       return;
     }
 
     if (data.status === "connected") {
-      setWifiStatus(`Connected to ${data.ssid}.`, "ok");
-      submitBtn.disabled = false;
-      return;
+      return finish(`Connected to ${data.ssid}.`, "ok");
     }
     if (data.status === "failed") {
-      setWifiStatus(`Failed to connect: ${data.error_message || "unknown error"}`, "err");
-      submitBtn.disabled = false;
-      return;
+      return finish(`Failed to connect: ${data.error_message || "unknown error"}`, "err");
     }
     if (data.status === "timeout") {
-      setWifiStatus("No confirmation from device. It may be out of range or the password may be wrong.", "err");
-      submitBtn.disabled = false;
-      return;
+      return finish(
+        "No confirmation from the device in time. If it can't join, it reverts to the previous network on its own.",
+        "err"
+      );
     }
   }
 
-  setWifiStatus("No confirmation from device. It may be out of range or the password may be wrong.", "err");
-  submitBtn.disabled = false;
+  finish(
+    "No confirmation from the device in time. If it can't join, it reverts to the previous network on its own.",
+    "err"
+  );
 });
 
 // ---------------------------------------------------------------- init
