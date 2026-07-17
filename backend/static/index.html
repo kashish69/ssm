@@ -29,7 +29,12 @@
       <span class="brand-mark" aria-hidden="true"></span>
       <span class="brand-name">Smart Shelf Monitoring</span>
     </div>
-    <button id="logout-btn" class="btn-ghost">Log out</button>
+    <div class="header-actions">
+      <button id="refresh-btn" class="btn-ghost" title="Refresh devices &amp; status">
+        <span class="refresh-icon" aria-hidden="true">&#8635;</span> Refresh
+      </button>
+      <button id="logout-btn" class="btn-ghost">Log out</button>
+    </div>
   </header>
   <main class="app-main">
     <div id="device-grid" class="device-grid"></div>
@@ -56,10 +61,38 @@
 </template>
 
 <div id="history-modal" class="modal hidden">
-  <div class="modal-content">
+  <div class="modal-content modal-content-lg">
     <button class="modal-close" data-close="history-modal" aria-label="Close">&times;</button>
     <h2 id="history-title">History</h2>
-    <div id="history-list" class="history-list"></div>
+    <p id="history-message" class="history-message hidden"></p>
+    <div id="history-carousel" class="history-carousel hidden">
+      <div class="carousel-main">
+        <div class="carousel-stage">
+          <button id="carousel-prev" class="carousel-nav prev" aria-label="Previous capture">&#8249;</button>
+          <img id="carousel-img" alt="Capture">
+          <button id="carousel-next" class="carousel-nav next" aria-label="Next capture">&#8250;</button>
+        </div>
+        <div id="carousel-thumbs" class="carousel-thumbs"></div>
+      </div>
+      <div class="carousel-details">
+        <div class="detail-group">
+          <span class="detail-label">Device</span>
+          <span id="detail-device" class="detail-value"></span>
+        </div>
+        <div class="detail-group">
+          <span class="detail-label">Captured</span>
+          <span id="detail-captured" class="detail-value"></span>
+        </div>
+        <div class="detail-group">
+          <span class="detail-label">Capture</span>
+          <span id="detail-position" class="detail-value"></span>
+        </div>
+        <div class="carousel-actions">
+          <button id="carousel-download" class="btn-primary">Download</button>
+          <button id="carousel-fullscreen" class="btn-ghost">Full screen</button>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
