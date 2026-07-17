@@ -433,6 +433,28 @@ button:focus-visible {
 .form-status.ok { color: var(--online); font-weight: 550; }
 .form-status.err { color: var(--danger); }
 
+/* Live action in progress: spinner + a close button that reads as unavailable */
+.form-status.busy {
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.form-status.busy::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent-2);
+  animation: spin 0.7s linear infinite;
+}
+.modal.busy .modal-close { opacity: 0.35; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+  .form-status.busy::before { animation: none !important; }
+}
+
 /* ---------------------------------------------------------- history */
 .modal-content-lg {
   max-width: 980px;
