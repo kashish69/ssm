@@ -29,11 +29,13 @@ class Settings(BaseSettings):
     capture_timeout_seconds: int = 25
     capture_cooldown_seconds: int = 10
     # The UI holds the modal open while this runs, so it's a live action the
-    # user waits on. Must cover one full rescan+connect retry cycle on the
-    # agent (rescan ~13s + a stalled nmcli attempt up to WIFI_CONNECT_TIMEOUT=25s
-    # + a quick successful retry ~10s) — 30s was cutting that cycle off before
-    # a genuine success could be reported, showing a false "no confirmation".
-    wifi_timeout_seconds: int = 50
+    # user waits on. Must cover the agent's full worst case: WIFI_MAX_ATTEMPTS
+    # (3, pi_agent.py) retry cycles, each up to a rescan (~13s) + a stalled
+    # nmcli attempt (WIFI_CONNECT_TIMEOUT=25s) = ~38s/cycle, ~114s worst case.
+    # Confirmed on hardware: a genuine success settled at 90s — past the prior
+    # 50s cap, which showed a false "no confirmation" on a request that
+    # actually succeeded. 130s gives headroom above the ~114s worst case.
+    wifi_timeout_seconds: int = 130
     upload_max_bytes: int = 10 * 1024 * 1024
 
     class Config:

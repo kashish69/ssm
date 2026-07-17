@@ -2,11 +2,11 @@ const STATUS_POLL_MS = 10_000;
 const CAPTURE_POLL_MS = 1_800;
 const CAPTURE_POLL_TIMEOUT_MS = 30_000;
 const WIFI_POLL_MS = 1_500;
-// Must stay slightly above the backend's wifi_timeout_seconds (50s) so the
+// Must stay slightly above the backend's wifi_timeout_seconds (130s) so the
 // server settles the request first and we surface its verdict rather than
-// racing it. 50s covers one full agent rescan+connect retry cycle — see the
+// racing it. 130s covers the agent's worst-case retry cycle — see the
 // comment on wifi_timeout_seconds in backend/app/config.py.
-const WIFI_POLL_TIMEOUT_MS = 52_000;
+const WIFI_POLL_TIMEOUT_MS = 132_000;
 
 const loginScreen = document.getElementById("login-screen");
 const appScreen = document.getElementById("app-screen");
@@ -457,7 +457,9 @@ wifiForm.addEventListener("submit", async (e) => {
 
   while (Date.now() < deadline) {
     const left = Math.ceil((deadline - Date.now()) / 1000);
-    setWifiStatus(`Applying — waiting for device to reconnect... (${left}s)`, "busy");
+    // The device may retry a few times before it confirms — this can
+    // legitimately take a couple of minutes, not stuck.
+    setWifiStatus(`Applying — this can take up to a couple of minutes... (${left}s)`, "busy");
     await new Promise((r) => setTimeout(r, WIFI_POLL_MS));
 
     let data;
