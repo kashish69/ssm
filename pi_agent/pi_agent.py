@@ -385,10 +385,23 @@ def wifi_loop() -> None:
                     time.sleep(3)
                     check_internet()
                     _confirm_wifi_target(target_ssid, target_password, request_id)
-                elif request_id:
-                    # Don't report the first failure: a cold scan cache fails
-                    # once and succeeds on retry. Only give up (and revert)
-                    # after the target has really proven unreachable.
+                else:
+                    # Count failures (and give up after WIFI_MAX_ATTEMPTS)
+                    # regardless of request_id — not just for UI-pushed
+                    # requests. request_id-gating this used to be able to trap
+                    # the agent permanently: _give_up_on_wifi's "no known-good
+                    # fallback" path clears request_id but re-targets the SAME
+                    # failed SSID, and if failure-counting only ran when
+                    # request_id was set, that first give-up call disabled all
+                    # future ones — the agent would retry forever with no
+                    # chance to notice a fallback becoming available later
+                    # (e.g. .env's WIFI_SSID after a restart). Reporting a
+                    # result over MQTT still only happens when request_id is
+                    # set (see publish_wifi_result), so this is safe to run
+                    # unconditionally. Don't report the first failure: a cold
+                    # scan cache fails once and succeeds on retry — only give
+                    # up (and revert) after the target has really proven
+                    # unreachable.
                     if _note_wifi_failure(target_ssid) >= WIFI_MAX_ATTEMPTS:
                         _give_up_on_wifi(target_ssid, request_id, error, last_good)
         stop_event.wait(WIFI_SCAN_INTERVAL)
