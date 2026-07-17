@@ -3,29 +3,38 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>RPi Capture</title>
+<title>Smart Shelf Monitoring</title>
 <link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#111318">
+<meta name="theme-color" content="#f5f5f4">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
-<div id="login-screen" class="screen">
+<div id="login-screen" class="screen login-screen">
   <form id="login-form" class="login-card">
-    <h1>RPi Capture</h1>
+    <div class="brand brand-lg">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Smart Shelf Monitoring</span>
+    </div>
+    <p class="login-subtitle">Sign in to monitor your shelves</p>
     <input id="passkey-input" type="password" placeholder="Passkey" autocomplete="current-password" required>
-    <button type="submit">Log in</button>
+    <button type="submit" class="btn-primary">Log in</button>
     <p id="login-error" class="error hidden"></p>
   </form>
 </div>
 
 <div id="app-screen" class="screen hidden">
   <header class="app-header">
-    <h1>RPi Capture</h1>
-    <button id="logout-btn" class="link-btn">Log out</button>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Smart Shelf Monitoring</span>
+    </div>
+    <button id="logout-btn" class="btn-ghost">Log out</button>
   </header>
-  <div id="device-grid" class="device-grid"></div>
-  <p id="empty-state" class="empty-state hidden">No devices configured.</p>
+  <main class="app-main">
+    <div id="device-grid" class="device-grid"></div>
+    <p id="empty-state" class="empty-state hidden">No devices configured.</p>
+  </main>
 </div>
 
 <template id="device-card-template">
@@ -38,9 +47,9 @@
     </div>
     <div class="card-name"></div>
     <div class="card-actions">
-      <button class="capture-btn">Capture</button>
-      <button class="history-btn">History</button>
-      <button class="wifi-btn" title="WiFi settings">&#9881;</button>
+      <button class="capture-btn btn-primary">Capture</button>
+      <button class="history-btn btn-ghost">History</button>
+      <button class="wifi-btn btn-icon" title="WiFi settings" aria-label="WiFi settings">&#9881;</button>
     </div>
     <p class="capture-status"></p>
   </div>
@@ -48,7 +57,7 @@
 
 <div id="history-modal" class="modal hidden">
   <div class="modal-content">
-    <button class="modal-close" data-close="history-modal">&times;</button>
+    <button class="modal-close" data-close="history-modal" aria-label="Close">&times;</button>
     <h2 id="history-title">History</h2>
     <div id="history-list" class="history-list"></div>
   </div>
@@ -56,13 +65,19 @@
 
 <div id="wifi-modal" class="modal hidden">
   <div class="modal-content">
-    <button class="modal-close" data-close="wifi-modal">&times;</button>
+    <button class="modal-close" data-close="wifi-modal" aria-label="Close">&times;</button>
     <h2>WiFi settings</h2>
     <form id="wifi-form">
-      <input id="wifi-ssid" type="text" placeholder="SSID" required>
-      <input id="wifi-password" type="password" placeholder="Password">
-      <button type="submit">Send to device</button>
-      <p id="wifi-form-status"></p>
+      <label class="field">
+        <span class="field-label">Network name</span>
+        <input id="wifi-ssid" type="text" placeholder="SSID" required>
+      </label>
+      <label class="field">
+        <span class="field-label">Password</span>
+        <input id="wifi-password" type="password" placeholder="Password">
+      </label>
+      <button type="submit" class="btn-primary">Send to device</button>
+      <p id="wifi-form-status" class="form-status"></p>
     </form>
   </div>
 </div>
