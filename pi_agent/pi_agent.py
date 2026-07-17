@@ -382,6 +382,18 @@ def main() -> None:
     try:
         stop_event.wait()
     finally:
+        # A clean MQTT DISCONNECT suppresses the Last Will, so publish the
+        # retained "offline" status explicitly here — otherwise a graceful
+        # shutdown (SIGTERM/Ctrl+C) leaves the device stuck "online" in the UI.
+        try:
+            info = mqtt_client.publish(
+                f"devices/{DEVICE_ID}/status",
+                json.dumps({"state": "offline", "ts": time.time()}),
+                qos=1, retain=True,
+            )
+            info.wait_for_publish(timeout=2)
+        except Exception as e:
+            logger.warning(f"Failed to publish offline status on shutdown: {e}")
         mqtt_client.loop_stop()
         mqtt_client.disconnect()
         picam2.stop()
