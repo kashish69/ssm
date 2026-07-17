@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from contextlib import contextmanager
 
 from app.config import settings
@@ -70,20 +71,30 @@ def _connect() -> sqlite3.Connection:
 
 _conn = _connect()
 
+# One connection is shared by FastAPI's threadpool AND the MQTT client's network
+# thread. check_same_thread=False only silences sqlite's thread check — it adds
+# no locking, so concurrent cursors on the same connection corrupt each other
+# ("InterfaceError: bad parameter or other API misuse", queries returning the
+# wrong rows, and interleaved commit/rollback). Serialize every use.
+# Reentrant so a nested get_cursor() on one thread can't deadlock.
+_lock = threading.RLock()
+
 
 def init_db() -> None:
-    _conn.executescript(SCHEMA)
-    _conn.commit()
+    with _lock:
+        _conn.executescript(SCHEMA)
+        _conn.commit()
 
 
 @contextmanager
 def get_cursor():
-    cur = _conn.cursor()
-    try:
-        yield cur
-        _conn.commit()
-    except Exception:
-        _conn.rollback()
-        raise
-    finally:
-        cur.close()
+    with _lock:
+        cur = _conn.cursor()
+        try:
+            yield cur
+            _conn.commit()
+        except Exception:
+            _conn.rollback()
+            raise
+        finally:
+            cur.close()
