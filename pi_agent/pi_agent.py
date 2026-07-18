@@ -43,6 +43,16 @@ commands fail with PermissionError:
 
     sudo mkdir -p /etc/pi-agent && sudo chown $USER /etc/pi-agent
 
+This process runs non-interactively (systemd, or any non-TTY context) and
+shells out to `sudo nmcli ...` for scanning/connecting — without a NOPASSWD
+sudoers rule, every one of those calls fails with "sudo: a password is
+required" / "a terminal is required to read the password", and the WiFi
+loop can never connect at all. One-time setup:
+
+    sudo visudo -f /etc/sudoers.d/pi-agent-nmcli
+    # add this line, save:
+    #   pi ALL=(root) NOPASSWD: /usr/bin/nmcli device wifi rescan, /usr/bin/nmcli connection delete *, /usr/bin/nmcli device wifi connect *
+
 Config (a .env next to this script is auto-loaded for direct runs; under
 systemd the EnvironmentFile provides these and takes precedence):
     MQTT_BROKER_HOST, MQTT_BROKER_PORT (default 443), MQTT_WS_PATH (default /mqtt)
