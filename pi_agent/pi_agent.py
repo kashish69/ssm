@@ -5,10 +5,13 @@ RPi remote-capture agent
 Runs three concerns in one process:
 
   1. WiFi auto-connect loop: every WIFI_SCAN_INTERVAL seconds, checks nmcli
-     for the target SSID and connects if not already on it. Target SSID/
-     password default to WIFI_SSID/WIFI_PASSWORD env vars, but are
-     overridden at runtime (no restart needed) if a wifi_config command
-     arrives over MQTT and gets written to WIFI_OVERRIDE_FILE.
+     for the target SSID and connects if not already on it. With no UI-pushed
+     override active, the target is drawn from WIFI_CANDIDATES — a priority-
+     ordered list of known networks — trying the next entry after
+     WIFI_MAX_ATTEMPTS failures on the current one (falls back to a single
+     WIFI_SSID/WIFI_PASSWORD network if WIFI_CANDIDATES isn't set). The
+     target is overridden at runtime (no restart needed) if a wifi_config
+     command arrives over MQTT and gets written to WIFI_OVERRIDE_FILE.
      A pushed network is only a candidate until it actually connects: on
      success it's reported back over MQTT and remembered as last_good; after
      WIFI_MAX_ATTEMPTS failures the agent reports the failure and reverts to
@@ -46,10 +49,14 @@ systemd the EnvironmentFile provides these and takes precedence):
     MQTT_TLS_CA_CERT (optional)
     DEVICE_ID, DEVICE_API_KEY
     BACKEND_UPLOAD_URL
-    WIFI_SSID, WIFI_PASSWORD
+    WIFI_SSID, WIFI_PASSWORD (single default network)
+    WIFI_CANDIDATES (optional; "ssid:pw;ssid:pw;..." priority list tried when
+        no UI-pushed override is active — overrides WIFI_SSID/WIFI_PASSWORD
+        if set; falls back to them as a single-entry list if not)
     WIFI_OVERRIDE_FILE (default /etc/pi-agent/wifi_override.json)
     WIFI_SCAN_INTERVAL (default 2 seconds)
-    WIFI_MAX_ATTEMPTS (default 3, before reverting to the last known-good SSID)
+    WIFI_MAX_ATTEMPTS (default 3, before reverting to the last known-good SSID,
+        or advancing to the next WIFI_CANDIDATES entry)
     LOG_FILE (default /home/pi/pi_agent.log)
 
 Run:
@@ -119,6 +126,21 @@ BACKEND_UPLOAD_URL = _require_env("BACKEND_UPLOAD_URL")
 
 WIFI_SSID = os.environ.get("WIFI_SSID", "")
 WIFI_PASSWORD = os.environ.get("WIFI_PASSWORD", "")
+# Priority-ordered list of networks to try when no UI-pushed override is
+# active, e.g. "WIFI-J3SNSU:deploysitepw;test:testpw" — same "a:b;c:d" list
+# convention as DEVICE_SEEDS in the backend. Falls back to a single-entry
+# list built from WIFI_SSID/WIFI_PASSWORD when unset, so existing
+# single-network deployments behave exactly as before.
+WIFI_CANDIDATES: list[dict] = []
+for _entry in os.environ.get("WIFI_CANDIDATES", "").split(";"):
+    _entry = _entry.strip()
+    if not _entry:
+        continue
+    _ssid, _, _password = _entry.partition(":")  # partition: a WiFi password may itself contain ':'
+    if _ssid.strip():
+        WIFI_CANDIDATES.append({"ssid": _ssid.strip(), "password": _password})
+if not WIFI_CANDIDATES and WIFI_SSID:
+    WIFI_CANDIDATES.append({"ssid": WIFI_SSID, "password": WIFI_PASSWORD})
 WIFI_OVERRIDE_FILE = Path(os.environ.get("WIFI_OVERRIDE_FILE", "/etc/pi-agent/wifi_override.json"))
 WIFI_SCAN_INTERVAL = float(os.environ.get("WIFI_SCAN_INTERVAL", "2"))
 # Failed attempts on a pushed network before giving up and reverting to the
@@ -162,6 +184,10 @@ _reported_wifi_requests: dict[str, str] = {}
 # Consecutive connect failures for the current target, so we can give up on an
 # unreachable network instead of chasing it forever.
 _wifi_failures: dict = {"target": None, "count": 0}
+# Index into WIFI_CANDIDATES for the network currently being tried when no
+# override is active. Resets to 0 on every restart, so a reboot always
+# retries the highest-priority candidate first.
+_candidate_index = 0
 
 
 # ------------------------------------------------------------------- wifi
@@ -180,16 +206,20 @@ def get_wifi_target() -> tuple[str, str, str | None, dict | None]:
     """Runtime WiFi target: (ssid, password, request_id, last_good).
 
     The override file (written by a wifi_config MQTT command) takes precedence
-    over the env-var defaults, no restart needed. request_id is None once a
-    target has been confirmed, so we only report a result once. last_good is
-    the last target we actually connected to — what we fall back to if a
-    pushed network turns out to be unreachable.
+    over WIFI_CANDIDATES, no restart needed. request_id is None once a target
+    has been confirmed, so we only report a result once. last_good is the
+    last target we actually connected to — what we fall back to if a pushed
+    network turns out to be unreachable. With no override active, the current
+    entry from WIFI_CANDIDATES is tried (see _candidate_index / wifi_loop).
     """
     data = _read_override()
     last_good = data.get("last_good")
     if data.get("ssid"):
         return data["ssid"], data.get("password", ""), data.get("request_id"), last_good
-    return WIFI_SSID, WIFI_PASSWORD, None, last_good
+    if WIFI_CANDIDATES:
+        c = WIFI_CANDIDATES[_candidate_index % len(WIFI_CANDIDATES)]
+        return c["ssid"], c["password"], None, last_good
+    return "", "", None, last_good
 
 
 def write_wifi_override(
@@ -450,7 +480,22 @@ def wifi_loop() -> None:
                     # scan cache fails once and succeeds on retry — only give
                     # up (and revert) after the target has really proven
                     # unreachable.
-                    if _note_wifi_failure(target_ssid) >= WIFI_MAX_ATTEMPTS:
+                    if not _read_override().get("ssid") and len(WIFI_CANDIDATES) > 1:
+                        # No UI-pushed override active and more than one
+                        # candidate configured: cycle to the next one instead
+                        # of the give-up/last_good-revert machinery below,
+                        # which is about recovering from a bad *pushed*
+                        # target and doesn't apply here — there's nothing to
+                        # revert away from, just another known network to try.
+                        if _note_wifi_failure(target_ssid) >= WIFI_MAX_ATTEMPTS:
+                            global _candidate_index
+                            _candidate_index = (_candidate_index + 1) % len(WIFI_CANDIDATES)
+                            logger.error(
+                                f"Giving up on candidate '{target_ssid}' after {WIFI_MAX_ATTEMPTS} "
+                                f"attempts; trying next candidate."
+                            )
+                            _reset_wifi_failures()
+                    elif _note_wifi_failure(target_ssid) >= WIFI_MAX_ATTEMPTS:
                         _give_up_on_wifi(target_ssid, request_id, error, last_good)
         stop_event.wait(WIFI_SCAN_INTERVAL)
 
