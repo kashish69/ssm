@@ -12,10 +12,14 @@ Runs three concerns in one process:
      WIFI_SSID/WIFI_PASSWORD network if WIFI_CANDIDATES isn't set). The
      target is overridden at runtime (no restart needed) if a wifi_config
      command arrives over MQTT and gets written to WIFI_OVERRIDE_FILE.
-     A pushed network is only a candidate until it actually connects: on
-     success it's reported back over MQTT and remembered as last_good; after
-     WIFI_MAX_ATTEMPTS failures the agent reports the failure and reverts to
-     last_good, so bad credentials from the UI can't strand a remote device.
+     A pushed network is only a candidate until it actually connects AND has
+     working internet (a WiFi association can succeed at Layer 2 on a
+     network that blocks DNS/internet outright, which looked identical to a
+     real success until this was verified): on success it's reported back
+     over MQTT and remembered as last_good; after WIFI_MAX_ATTEMPTS failures
+     the agent reports the failure and reverts to last_good, so bad
+     credentials — or a network that just doesn't actually work — from the
+     UI can't strand a remote device.
 
   2. MQTT client: persistent connection to the broker with a Last Will
      (offline) + retained "online" status on connect, subscribed to this
@@ -198,6 +202,10 @@ _wifi_failures: dict = {"target": None, "count": 0}
 # override is active. Resets to 0 on every restart, so a reboot always
 # retries the highest-priority candidate first.
 _candidate_index = 0
+# SSID we last verified actually has working internet, so wifi_loop only
+# re-runs check_internet() on a fresh (re)association instead of every tick
+# of an already-confirmed-good connection.
+_last_verified_ssid: str | None = None
 
 
 # ------------------------------------------------------------------- wifi
@@ -458,55 +466,72 @@ def _give_up_on_wifi(failed_ssid: str, request_id: str, error: str, last_good: d
 
 
 def wifi_loop() -> None:
+    global _last_verified_ssid
     while not stop_event.is_set():
         target_ssid, target_password, request_id, last_good = get_wifi_target()
         if target_ssid:
             current_ssid = get_current_ssid()
-            if current_ssid == target_ssid:
-                # Already on the requested network — that counts as applied.
-                _confirm_wifi_target(target_ssid, target_password, request_id)
-            else:
+            connected = current_ssid == target_ssid
+            error = ""
+            if not connected:
                 logger.info(f"Not on target SSID (current={current_ssid!r}, target={target_ssid!r}); reconnecting.")
+                _last_verified_ssid = None  # any prior verification is now stale
                 rescan_wifi()
                 connected, error = connect_wifi(target_ssid, target_password)
                 if connected:
                     time.sleep(3)
-                    check_internet()
-                    _confirm_wifi_target(target_ssid, target_password, request_id)
+
+            if connected and _last_verified_ssid != target_ssid:
+                # A WiFi association succeeding at Layer 2 doesn't mean the
+                # network actually works — seen on a deployment-site network
+                # that associated fine but blocked outbound DNS entirely.
+                # That looked identical to a real success and could never
+                # trigger candidate-cycling/give-up below. Verify once per
+                # fresh (re)association rather than every tick, so an
+                # already-confirmed-good connection doesn't hammer
+                # GOOGLE_CHECK_URL forever.
+                if check_internet():
+                    _last_verified_ssid = target_ssid
                 else:
-                    # Count failures (and give up after WIFI_MAX_ATTEMPTS)
-                    # regardless of request_id — not just for UI-pushed
-                    # requests. request_id-gating this used to be able to trap
-                    # the agent permanently: _give_up_on_wifi's "no known-good
-                    # fallback" path clears request_id but re-targets the SAME
-                    # failed SSID, and if failure-counting only ran when
-                    # request_id was set, that first give-up call disabled all
-                    # future ones — the agent would retry forever with no
-                    # chance to notice a fallback becoming available later
-                    # (e.g. .env's WIFI_SSID after a restart). Reporting a
-                    # result over MQTT still only happens when request_id is
-                    # set (see publish_wifi_result), so this is safe to run
-                    # unconditionally. Don't report the first failure: a cold
-                    # scan cache fails once and succeeds on retry — only give
-                    # up (and revert) after the target has really proven
-                    # unreachable.
-                    if not _read_override().get("ssid") and len(WIFI_CANDIDATES) > 1:
-                        # No UI-pushed override active and more than one
-                        # candidate configured: cycle to the next one instead
-                        # of the give-up/last_good-revert machinery below,
-                        # which is about recovering from a bad *pushed*
-                        # target and doesn't apply here — there's nothing to
-                        # revert away from, just another known network to try.
-                        if _note_wifi_failure(target_ssid) >= WIFI_MAX_ATTEMPTS:
-                            global _candidate_index
-                            _candidate_index = (_candidate_index + 1) % len(WIFI_CANDIDATES)
-                            logger.error(
-                                f"Giving up on candidate '{target_ssid}' after {WIFI_MAX_ATTEMPTS} "
-                                f"attempts; trying next candidate."
-                            )
-                            _reset_wifi_failures()
-                    elif _note_wifi_failure(target_ssid) >= WIFI_MAX_ATTEMPTS:
-                        _give_up_on_wifi(target_ssid, request_id, error, last_good)
+                    connected = False
+                    error = "connected to WiFi but no internet access"
+
+            if connected:
+                _confirm_wifi_target(target_ssid, target_password, request_id)
+            else:
+                # Count failures (and give up after WIFI_MAX_ATTEMPTS)
+                # regardless of request_id — not just for UI-pushed
+                # requests. request_id-gating this used to be able to trap
+                # the agent permanently: _give_up_on_wifi's "no known-good
+                # fallback" path clears request_id but re-targets the SAME
+                # failed SSID, and if failure-counting only ran when
+                # request_id was set, that first give-up call disabled all
+                # future ones — the agent would retry forever with no
+                # chance to notice a fallback becoming available later
+                # (e.g. .env's WIFI_SSID after a restart). Reporting a
+                # result over MQTT still only happens when request_id is
+                # set (see publish_wifi_result), so this is safe to run
+                # unconditionally. Don't report the first failure: a cold
+                # scan cache fails once and succeeds on retry — only give
+                # up (and revert) after the target has really proven
+                # unreachable.
+                if not _read_override().get("ssid") and len(WIFI_CANDIDATES) > 1:
+                    # No UI-pushed override active and more than one
+                    # candidate configured: cycle to the next one instead
+                    # of the give-up/last_good-revert machinery below,
+                    # which is about recovering from a bad *pushed*
+                    # target and doesn't apply here — there's nothing to
+                    # revert away from, just another known network to try.
+                    if _note_wifi_failure(target_ssid) >= WIFI_MAX_ATTEMPTS:
+                        global _candidate_index
+                        _candidate_index = (_candidate_index + 1) % len(WIFI_CANDIDATES)
+                        logger.error(
+                            f"Giving up on candidate '{target_ssid}' after {WIFI_MAX_ATTEMPTS} "
+                            f"attempts; trying next candidate."
+                        )
+                        _reset_wifi_failures()
+                elif _note_wifi_failure(target_ssid) >= WIFI_MAX_ATTEMPTS:
+                    _give_up_on_wifi(target_ssid, request_id, error, last_good)
         stop_event.wait(WIFI_SCAN_INTERVAL)
 
 
